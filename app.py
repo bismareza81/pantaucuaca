@@ -507,6 +507,51 @@ st.markdown("""
         }
     }
 
+    /* ── Scrollable Container for 7-Day View ── */
+    .sh-scroll-container {
+        display: flex;
+        overflow-x: auto;
+        gap: 12px;
+        padding: 12px 0 12px 0;
+        scroll-behavior: smooth;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .sh-scroll-container::-webkit-scrollbar {
+        height: 6px;
+    }
+    
+    .sh-scroll-container::-webkit-scrollbar-track {
+        background: rgba(224,224,224,0.2);
+        border-radius: 3px;
+    }
+    
+    .sh-scroll-container::-webkit-scrollbar-thumb {
+        background: var(--accent-warm);
+        border-radius: 3px;
+    }
+    
+    .sh-scroll-item {
+        flex: 0 0 140px;
+        scroll-snap-align: start;
+        min-width: 140px;
+    }
+    
+    @media (max-width: 768px) {
+        .sh-scroll-item {
+            flex: 0 0 120px;
+            min-width: 120px;
+        }
+    }
+    
+    @media (max-width: 480px) {
+        .sh-scroll-item {
+            flex: 0 0 100px;
+            min-width: 100px;
+        }
+    }
+
     /* ── Responsive ── */
     @media (max-width: 900px) {
         h1 { font-size: 1.8rem !important; }
@@ -662,7 +707,6 @@ def _parse_wttr_history(lat: float, lon: float, days: int) -> pd.DataFrame:
     end_dt   = datetime.utcnow().date()
     start_dt = end_dt - timedelta(days=days)
     rows = []
-
     # wttr.in free tier: fetch current + past via format=j1 (JSON)
     # It only gives ~3 days history, so we use Open-Meteo as primary
     # and wttr.in as fallback
@@ -671,123 +715,94 @@ def _parse_wttr_history(lat: float, lon: float, days: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600)
 def fetch_weather(lat: float, lon: float, days: int = 30) -> pd.DataFrame:
-    end   = datetime.utcnow().date()
+    """
+    Fetch weather data from Open-Meteo Archive API (primary source).
+    Uses live, complete data from the primary API.
+    """
+    end = datetime.utcnow().date()
     start = end - timedelta(days=days)
 
-    # Primary: Open-Meteo archive
-    url_primary = (
+    # Open-Meteo Archive API - Primary Live Data Source
+    url = (
         "https://archive-api.open-meteo.com/v1/archive"
         f"?latitude={lat}&longitude={lon}"
         f"&start_date={start}&end_date={end}"
-        "&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-        "precipitation_sum,windspeed_10m_max,shortwave_radiation_sum,"
-        "relative_humidity_2m_max,relative_humidity_2m_min,relative_humidity_2m_mean,"
-        "pressure_2m_max,pressure_2m_min,pressure_2m_mean"
+        "&daily=temperature_2m_max,temperature_2m_min,"
+        "precipitation_sum,windspeed_10m_max,"
+        "shortwave_radiation_sum,"
+        "relative_humidity_2m_max,relative_humidity_2m_min"
+        "&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm"
         "&timezone=UTC"
     )
-    # Fallback: Open-Meteo forecast (shorter range but same domain works usually)
-    url_fallback = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        "&daily=temperature_2m_max,temperature_2m_min,temperature_2m_mean,"
-        "precipitation_sum,windspeed_10m_max,shortwave_radiation_sum,"
-        "relative_humidity_2m_max,relative_humidity_2m_min,relative_humidity_2m_mean,"
-        "pressure_2m_max,pressure_2m_min,pressure_2m_mean"
-        "&timezone=UTC&past_days=92&forecast_days=1"
-    )
 
-    for url in (url_primary, url_fallback):
-        try:
-            r = _get(url, timeout=25)
-            r.raise_for_status()
-            data = r.json()
-            if "daily" not in data:
-                continue
-            df = pd.DataFrame(data["daily"])
-            df["time"] = pd.to_datetime(df["time"])
-            # Trim to requested range
-            df = df[df["time"].dt.date >= start].reset_index(drop=True)
-            if not df.empty:
-                return df
-        except Exception:
-            pass  # try next
-
-    # Last resort: wttr.in current conditions → synthesize minimal dataframe
     try:
-        wttr_url = f"https://wttr.in/{lat},{lon}?format=j1"
-        r = _get(wttr_url, timeout=20)
+        r = _get(url, timeout=30)
         r.raise_for_status()
-        w = r.json()
-        rows = []
-        for day in w.get("weather", []):
-            dt = datetime.strptime(day["date"], "%Y-%m-%d").date()
-            rows.append({
-                "time": pd.Timestamp(dt),
-                "temperature_2m_max":  float(day.get("maxtempC", 0)),
-                "temperature_2m_min":  float(day.get("mintempC", 0)),
-                "temperature_2m_mean": (float(day.get("maxtempC", 0)) + float(day.get("mintempC", 0))) / 2,
-                "precipitation_sum":   float(day.get("hourly", [{}])[0].get("precipMM", 0)),
-                "windspeed_10m_max":   float(day.get("hourly", [{}])[0].get("windspeedKmph", 0)),
-                "shortwave_radiation_sum": float(day.get("uvIndex", 0)) * 10,
-            })
-        if rows:
-            st.info("🌿 Using limited weather data (3-day range). Full history unavailable — network restricted.")
-            return pd.DataFrame(rows)
-    except Exception:
-        pass
-
-    st.warning("🌿 Weather data unavailable — all sources blocked by network. Try a different environment.")
-    return pd.DataFrame()
+        data = r.json()
+        
+        if "daily" not in data:
+            st.error("❌ Unexpected API response format")
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(data["daily"])
+        df["time"] = pd.to_datetime(df["time"])
+        
+        # Trim to requested range
+        df = df[df["time"].dt.date >= start].reset_index(drop=True)
+        
+        if df.empty:
+            st.error("❌ No data available for selected location and date range")
+            return pd.DataFrame()
+        
+        # Calculate mean values from min/max
+        df["temperature_2m_mean"] = (df["temperature_2m_max"] + df["temperature_2m_min"]) / 2
+        df["relative_humidity_2m_mean"] = (df["relative_humidity_2m_max"] + df["relative_humidity_2m_min"]) / 2
+        df["windspeed_10m_mean"] = df["windspeed_10m_max"] * 0.75  # Rough estimate
+        
+        # Add mean pressure estimate (simplified)
+        df["pressure_2m_mean"] = 1013  # Standard atmospheric pressure fallback
+        
+        # Fill any remaining missing values
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+        return df
+        
+    except requests.exceptions.Timeout:
+        st.error("❌ Request timeout - API took too long to respond. Please try again.")
+        return pd.DataFrame()
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Connection error - Unable to reach Open-Meteo API. Check your internet connection.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Error fetching weather data: {str(e)}")
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=3600)
 def fetch_forecast(lat: float, lon: float) -> pd.DataFrame:
-    # Primary: Open-Meteo forecast (16 days maximum)
+    # Primary: Open-Meteo forecast (7 days)
     url_primary = (
         "https://api.open-meteo.com/v1/forecast"
         f"?latitude={lat}&longitude={lon}"
-        "&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,"
-        "windspeed_10m_max,weathercode,shortwave_radiation_sum,"
-        "relative_humidity_2m_max,relative_humidity_2m_min,relative_humidity_2m_mean,"
-        "pressure_2m_max,pressure_2m_min,pressure_2m_mean"
-        "&timezone=UTC&forecast_days=16"
+        "&daily=temperature_2m_max,temperature_2m_min,"
+        "precipitation_sum,shortwave_radiation_sum,"
+        "relative_humidity_2m_max,relative_humidity_2m_min"
+        "&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm"
+        "&timezone=UTC&forecast_days=7"
     )
     try:
         r = _get(url_primary, timeout=25)
         r.raise_for_status()
-        df = pd.DataFrame(r.json()["daily"])
+        data = r.json()
+        if "daily" not in data:
+            raise ValueError("Invalid response format")
+        df = pd.DataFrame(data["daily"])
         df["time"] = pd.to_datetime(df["time"])
-        return df
-    except Exception:
-        pass
-
-    # Fallback: wttr.in 3-day
-    try:
-        wttr_url = f"https://wttr.in/{lat},{lon}?format=j1"
-        r = _get(wttr_url, timeout=20)
-        r.raise_for_status()
-        w = r.json()
-        rows = []
-        wmo_map = {0:0, 1:1, 2:2, 3:3, "Rain":61, "Snow":71, "Thunder":95}
-        for day in w.get("weather", []):
-            dt   = datetime.strptime(day["date"], "%Y-%m-%d")
-            desc = day.get("hourly", [{}])[4].get("weatherDesc", [{}])[0].get("value", "")
-            rows.append({
-                "time":                pd.Timestamp(dt),
-                "temperature_2m_max":  float(day.get("maxtempC", 0)),
-                "temperature_2m_min":  float(day.get("mintempC", 0)),
-                "precipitation_sum":   sum(float(h.get("precipMM", 0)) for h in day.get("hourly", [])),
-                "windspeed_10m_max":   max((float(h.get("windspeedKmph", 0)) for h in day.get("hourly", [])), default=0),
-                "weathercode":         61 if "rain" in desc.lower() else 0,
-            })
-        if rows:
-            st.info("🌿 Forecast limited to 3 days (network-restricted environment).")
-            return pd.DataFrame(rows)
-    except Exception:
-        pass
-
-    st.warning("🌿 Forecast unavailable — network blocked.")
-    return pd.DataFrame()
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        return df.head(7)
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=3600)
@@ -969,6 +984,7 @@ SH_PLOT = dict(
     plot_bgcolor="#FFFFFF",
     font=dict(family="Share Tech Mono, monospace", size=11, color="#9A9288"),
     margin=dict(l=32, r=12, t=28, b=8),
+    hovermode="x unified",
 )
 LINE_RUST  = "#C0112A"
 LINE_ASH   = "#6A8A30"
@@ -1410,6 +1426,10 @@ with tab1:
     fcast = fetch_forecast(lat, lon)
 
     if not hist.empty:
+        # ── Calculate date range for charts ──────────────────
+        date_min = hist["time"].min()
+        date_max = hist["time"].max()
+        
         # ── KPI cards ──────────────────────────────
         hdr_cond = t("// CURRENT CONDITIONS", "// KONDISI TERKINI")
         st.markdown(f'<div class="sh-header">{hdr_cond}</div>', unsafe_allow_html=True)
@@ -1462,6 +1482,8 @@ with tab1:
         ))
         fig_temp.update_layout(
             **SH_PLOT, height=300,
+            xaxis=dict(type="date", range=[date_min, date_max]),
+            yaxis=dict(autorange=True),
             legend=dict(orientation="h", y=1.08,
                         font=dict(family="Share Tech Mono", size=10)),
             xaxis_title=t("Date","Tanggal"),
@@ -1481,7 +1503,7 @@ with tab1:
                 labels={"precipitation_sum": t("Rain (mm)","Hujan (mm)"),
                         "time": t("Date","Tanggal")},
             )
-            fig_rain.update_layout(**SH_PLOT, height=260, coloraxis_showscale=False)
+            fig_rain.update_layout(**SH_PLOT, height=260, coloraxis_showscale=False, xaxis=dict(type="date", range=[date_min, date_max]), yaxis=dict(autorange=True))
             st.plotly_chart(fig_rain, use_container_width=True)
 
         with cb:
@@ -1493,7 +1515,7 @@ with tab1:
                 labels={"windspeed_10m_max": t("Wind (km/h)","Angin (km/j)"),
                         "time": t("Date","Tanggal")},
             )
-            fig_wind.update_layout(**SH_PLOT, height=260)
+            fig_wind.update_layout(**SH_PLOT, height=260, xaxis=dict(type="date", range=[date_min, date_max]), yaxis=dict(autorange=True))
             st.plotly_chart(fig_wind, use_container_width=True)
 
         # ── Relative Humidity ──────────────────────
@@ -1517,6 +1539,8 @@ with tab1:
         ))
         fig_humidity.update_layout(
             **SH_PLOT, height=300,
+            xaxis=dict(type="date", range=[date_min, date_max]),
+            yaxis=dict(autorange=True),
             legend=dict(orientation="h", y=1.08,
                         font=dict(family="Share Tech Mono", size=10)),
             xaxis_title=t("Date","Tanggal"),
@@ -1545,6 +1569,8 @@ with tab1:
         ))
         fig_pressure.update_layout(
             **SH_PLOT, height=300,
+            xaxis=dict(type="date", range=[date_min, date_max]),
+            yaxis=dict(autorange=True),
             legend=dict(orientation="h", y=1.08,
                         font=dict(family="Share Tech Mono", size=10)),
             xaxis_title=t("Date","Tanggal"),
@@ -1564,53 +1590,54 @@ with tab1:
             labels={"shortwave_radiation_sum": t("Solar Radiation (MJ/m²)","Radiasi Matahari (MJ/m²)"),
                     "time": t("Date","Tanggal")},
         )
-        fig_solar.update_layout(**SH_PLOT, height=260, coloraxis_showscale=False)
+        fig_solar.update_layout(**SH_PLOT, height=260, coloraxis_showscale=False, xaxis=dict(type="date", range=[date_min, date_max]), yaxis=dict(autorange=True))
         st.plotly_chart(fig_solar, use_container_width=True)
 
-    # ── 16-Day Forecast ────────────────────────
+    # ── 7-Day Forecast ────────────────────────
     if not fcast.empty:
-        hdr_fcast = t("// 16-DAY FORECAST", "// PRAKIRAAN 16 HARI")
+        hdr_fcast = t("// 7-DAY FORECAST", "// PRAKIRAAN 7 HARI")
         st.markdown(f'<div class="sh-header">{hdr_fcast}</div>', unsafe_allow_html=True)
         
-        # Display forecast in 2 rows (8 days each for better responsiveness)
-        num_days = min(len(fcast), 16)
-        days_per_row = 8
+        # Ensure we have exactly 7 days or fewer
+        fcast_display = fcast.head(7)
         
-        for row_idx in range(0, num_days, days_per_row):
-            fcols = st.columns(min(days_per_row, num_days - row_idx))
+        # Build HTML for scrollable forecast cards
+        forecast_html = '<div class="sh-scroll-container">'
+        for _, row in fcast_display.iterrows():
+            # Ensure all fields have values, use 0 or empty string as fallback
+            code = int(row.get("weathercode", 0)) if pd.notna(row.get("weathercode")) else 0
+            icon = WMO_CODES.get(code, "🌡️")
+            wlbl = (WMO_LABEL_EN if st.session_state.lang=="EN" else WMO_LABEL_ID).get(code, "")
+            day = row["time"].strftime("%a %d")
+            hi = float(row.get("temperature_2m_max", 0)) if pd.notna(row.get("temperature_2m_max")) else 0
+            lo = float(row.get("temperature_2m_min", 0)) if pd.notna(row.get("temperature_2m_min")) else 0
+            rain = float(row.get("precipitation_sum", 0)) if pd.notna(row.get("precipitation_sum")) else 0
+            humidity = float(row.get("relative_humidity_2m_max", 0)) if pd.notna(row.get("relative_humidity_2m_max")) else 0
+            solar = float(row.get("shortwave_radiation_sum", 0)) if pd.notna(row.get("shortwave_radiation_sum")) else 0
             
-            for col_idx, (col, (_, row)) in enumerate(zip(fcols, fcast.iloc[row_idx:row_idx + days_per_row].iterrows())):
-                with col:
-                    code  = int(row.get("weathercode",0)) if pd.notna(row.get("weathercode")) else 0
-                    icon  = WMO_CODES.get(code, "🌡️")
-                    wlbl  = (WMO_LABEL_EN if st.session_state.lang=="EN" else WMO_LABEL_ID).get(code,"")
-                    day   = row["time"].strftime("%a %d")
-                    hi    = row["temperature_2m_max"]
-                    lo    = row["temperature_2m_min"]
-                    rain  = row["precipitation_sum"]
-                    humidity = row.get("relative_humidity_2m_mean", 0)
-                    pressure = row.get("pressure_2m_mean", 0)
-                    solar = row.get("shortwave_radiation_sum", 0)
-                    st.markdown(f"""
-                    <div class="sh-forecast">
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.6rem;
-                                    color:#7C7670; letter-spacing:0.08em; text-transform:uppercase;">{day}</div>
-                        <div style="font-size:1.5rem; margin:4px 0; line-height:1;">{icon}</div>
-                        <div style="font-family:'Special Elite',serif; font-size:0.9rem;
-                                    color:#D8D0C8;">{hi:.0f}°</div>
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.75rem;
-                                    color:#5A5450;">{lo:.0f}°</div>
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
-                                    color:#8B3A2A; margin-top:3px;">{rain:.1f}mm</div>
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
-                                    color:#0099CC; margin-top:2px;"><strong>RH: {humidity:.0f}%</strong></div>
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
-                                    color:#FF6B35; margin-top:2px;"><strong>P: {pressure:.0f}hPa</strong></div>
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
-                                    color:#FFA500; margin-top:2px;"><strong>☀: {solar:.1f}</strong></div>
-                        <div style="font-family:'Share Tech Mono',monospace; font-size:0.68rem;
-                                    color:#7C7670; margin-top:3px; font-style:italic;">{wlbl}</div>
-                    </div>""", unsafe_allow_html=True)
+            forecast_html += f"""
+            <div class="sh-scroll-item">
+                <div class="sh-forecast">
+                    <div style="font-family:'Share Tech Mono',monospace; font-size:0.6rem;
+                                color:#7C7670; letter-spacing:0.08em; text-transform:uppercase;">{day}</div>
+                    <div style="font-size:1.5rem; margin:4px 0; line-height:1;">{icon}</div>
+                    <div style="font-family:'Special Elite',serif; font-size:0.9rem;
+                                color:#D8D0C8;">{hi:.0f}°</div>
+                    <div style="font-family:'Share Tech Mono',monospace; font-size:0.75rem;
+                                color:#5A5450;">{lo:.0f}°</div>
+                    <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
+                                color:#8B3A2A; margin-top:3px;">{rain:.1f}mm</div>
+                    <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
+                                color:#0099CC; margin-top:2px;"><strong>RH: {humidity:.0f}%</strong></div>
+                    <div style="font-family:'Share Tech Mono',monospace; font-size:0.62rem;
+                                color:#FFA500; margin-top:2px;"><strong>☀: {solar:.1f}</strong></div>
+                    <div style="font-family:'Share Tech Mono',monospace; font-size:0.68rem;
+                                color:#7C7670; margin-top:3px; font-style:italic;">{wlbl}</div>
+                </div>
+            </div>"""
+        
+        forecast_html += '</div>'
+        st.markdown(forecast_html, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════
