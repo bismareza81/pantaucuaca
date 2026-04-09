@@ -5,6 +5,10 @@ import plotly.graph_objects as go
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -2010,37 +2014,40 @@ Current context: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC
         try:
             import requests as _req, os as _os
             _key = _os.environ.get("GEMINI_API_KEY", "")
-            _url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.5-flash-lite:generateContent?key={_key}"
-            )
-            # Build Gemini contents — roles: "user" / "model"
-            gemini_contents = []
-            for m in messages[:-1]:
-                _role = "model" if m["role"] == "assistant" else "user"
-                gemini_contents.append({"role": _role, "parts": [{"text": m["content"]}]})
-            gemini_contents.append({"role": "user", "parts": [{"text": messages[-1]["content"]}]})
-
-            api_payload = {
-                "system_instruction": {"parts": [{"text": system_prompt}]},
-                "contents": gemini_contents,
-                "generationConfig": {
-                    "maxOutputTokens": 512,
-                    "temperature": 0.88,
-                },
-            }
-            api_resp = _req.post(
-                _url,
-                headers={"Content-Type": "application/json"},
-                json=api_payload,
-                timeout=30,
-            )
-            api_data = api_resp.json()
-            if "candidates" in api_data and api_data["candidates"]:
-                reply = api_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if not _key:
+                reply = "▓▒░ DEPTH STATIC ░▒▓ — API Key not found. Please set GEMINI_API_KEY in your .env file."
             else:
-                err = api_data.get("error", {}).get("message", "Depth signal lost.")
-                reply = f"▓▒░ DEPTH STATIC ░▒▓ — {err}"
+                _url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"gemini-2.5-flash-lite:generateContent?key={_key}"
+                )
+                # Build Gemini contents — roles: "user" / "model"
+                gemini_contents = []
+                for m in messages[:-1]:
+                    _role = "model" if m["role"] == "assistant" else "user"
+                    gemini_contents.append({"role": _role, "parts": [{"text": m["content"]}]})
+                gemini_contents.append({"role": "user", "parts": [{"text": messages[-1]["content"]}]})
+
+                api_payload = {
+                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "contents": gemini_contents,
+                    "generationConfig": {
+                        "maxOutputTokens": 512,
+                        "temperature": 0.88,
+                    },
+                }
+                api_resp = _req.post(
+                    _url,
+                    headers={"Content-Type": "application/json"},
+                    json=api_payload,
+                    timeout=30,
+                )
+                api_data = api_resp.json()
+                if "candidates" in api_data and api_data["candidates"]:
+                    reply = api_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                else:
+                    err = api_data.get("error", {}).get("message", "Depth signal lost.")
+                    reply = f"▓▒░ DEPTH STATIC ░▒▓ — {err}"
         except Exception as e:
             reply = f"▓▒░ The pressure crushed the signal. The deep swallowed your words. ({e})"
 
